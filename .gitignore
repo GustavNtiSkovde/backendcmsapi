@@ -1,0 +1,5 @@
+node_modules/
+vendor/
+.ddev/.downloads/
+.ddev/db_snapshots/
+.ddev/.importdb*
