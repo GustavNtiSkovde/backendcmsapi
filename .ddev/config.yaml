@@ -1,6 +1,6 @@
 name: backendcms
 type: php
-docroot: public
+docroot: ""
 php_version: "8.4"
 webserver_type: nginx-fpm
 router_http_port: "8080"
