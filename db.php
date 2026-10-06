@@ -1,19 +1,17 @@
 <?php
-$host = 'db';
-$dbname = 'backendapi';
-$username = 'root';
-$password = 'root';
-$port = 3306;
+$host = 'db'; // DDEV host
+$user = 'db'; // DDEV användare
+$pass = 'db'; // DDEV lösenord
+$db   = 'db'; // DDEV databasnamn
 
-$dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
+$conn = new mysqli($host, $user, $pass, $db);
 
-try {
-    $pdo = new PDO($dsn, $username, $password, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
-    
-    echo "Successfully connected to the DDEV database!";
-} catch (PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+if ($conn->connect_error) {
+    http_response_code(500);
+    echo json_encode(['error' => 'Databasanslutning misslyckades: ' . $conn->connect_error]);
+    exit;
+} else {
+    echo "connected";
 }
+
+$conn->set_charset("utf8mb4");
