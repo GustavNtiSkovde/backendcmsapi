@@ -18,6 +18,8 @@ nodejs_version: "24"
 corepack_enable: false
 xhgui_https_port: "8142"
 xhgui_http_port: "8143"
+mysql_extra_databases:
+    - backendapi
 
 # Key features of DDEV's config.yaml:
 

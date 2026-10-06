@@ -1,8 +1,8 @@
 <?php
 $host = 'db';
-$dbname = 'db';
-$username = 'db';
-$password = 'db';
+$dbname = 'backendapi';
+$username = 'root';
+$password = 'root';
 $port = 3306;
 
 $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
