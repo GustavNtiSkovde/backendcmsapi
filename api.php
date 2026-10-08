@@ -10,11 +10,13 @@ mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 // ==========================================
 if ($method === 'GET') {
     try {
-        $pageId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT) ?: null;
-        $title  = !empty($_GET['title']) ? $_GET['title'] : null;
-        $slug   = !empty($_GET['slug']) ? $_GET['slug'] : null;
+        $pageId   = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT) ?: null;
+        $title    = !empty($_GET['title']) ? $_GET['title'] : null;
+        $slug     = !empty($_GET['slug']) ? $_GET['slug'] : null;
+        $category = !empty($_GET['category']) ? $_GET['category'] : null;
+        $lang     = !empty($_GET['lang']) ? $_GET['lang'] : null; // Fixed typo (was $_GET['category'])
 
-        // Look up 1 site
+        // Look up 1 single site (by ID, Slug, or Title)
         if ($pageId !== null || $title !== null || $slug !== null) {
             $whereClause = "";
             $param = "";
@@ -78,7 +80,39 @@ if ($method === 'GET') {
             exit;
         }
 
-        // Load img list of sites in client
+        // --- FETCH LIST OF SITES (With Option 1: Dynamic Filtering for lang and category) ---
+        $conditions = [];
+        $params = [];
+        $types = "";
+
+        // Language Filter (handles numeric ID like lang=1 or string code like lang=en)
+        if ($lang !== null) {
+            if (is_numeric($lang)) {
+                $conditions[] = "l.ID = ?";
+                $params[] = (int)$lang;
+                $types .= "i";
+            } else {
+                $conditions[] = "l.lang = ?";
+                $params[] = $lang;
+                $types .= "s";
+            }
+        }
+
+        // Category Filter (handles numeric ID like category=2 or string like category=news)
+        if ($category !== null) {
+            if (is_numeric($category)) {
+                $conditions[] = "c.ID = ?";
+                $params[] = (int)$category;
+                $types .= "i";
+            } else {
+                $conditions[] = "c.category = ?";
+                $params[] = $category;
+                $types .= "s";
+            }
+        }
+
+        $whereSQL = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
+
         $sql = "
             SELECT 
                 p.ID as page_id,
@@ -99,11 +133,21 @@ if ($method === 'GET') {
             LEFT JOIN category c ON pc.FORcategory = c.ID
             LEFT JOIN pagemedia pm ON p.ID = pm.FORpage
             LEFT JOIN media m ON pm.FORmedia = m.ID
+            {$whereSQL}
             ORDER BY p.ID DESC
         ";
 
-        $result = $conn->query($sql);
-        $sites = $result->fetch_all(MYSQLI_ASSOC);
+        if (!empty($params)) {
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $sites = $result->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+        } else {
+            $result = $conn->query($sql);
+            $sites = $result->fetch_all(MYSQLI_ASSOC);
+        }
 
         // Decode content for each page entry
         foreach ($sites as &$site) {
