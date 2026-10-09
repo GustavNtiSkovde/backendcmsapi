@@ -2,357 +2,311 @@
 header('Content-Type: application/json');
 require_once 'db.php';
 
-$method = $_SERVER['REQUEST_METHOD'];
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+$method = $_SERVER['REQUEST_METHOD'];
+const JSON_FLAGS = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
+// ---------- Helpers ----------
+function slugify(string $s): string {
+    $s = strtr($s, ['å'=>'a','ä'=>'a','ö'=>'o','Å'=>'A','Ä'=>'A','Ö'=>'O']);
+    return strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $s), '-')) ?: 'page';
+}
+
+function getOrCreateLang(mysqli $conn, string $name): int {
+    $stmt = $conn->prepare("SELECT ID FROM lang WHERE lang = ?");
+    $stmt->bind_param("s", $name);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if ($row) return (int)$row['ID'];
+
+    $stmt = $conn->prepare("INSERT INTO lang (lang) VALUES (?)");
+    $stmt->bind_param("s", $name);
+    $stmt->execute();
+    $id = $conn->insert_id;
+    $stmt->close();
+    return $id;
+}
+
+function getOrCreateCategory(mysqli $conn, string $name): int {
+    $stmt = $conn->prepare("SELECT ID FROM category WHERE category = ?");
+    $stmt->bind_param("s", $name);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if ($row) return (int)$row['ID'];
+
+    $slug = slugify($name);
+    $stmt = $conn->prepare("INSERT INTO category (category, slug) VALUES (?, ?)");
+    $stmt->bind_param("ss", $name, $slug);
+    $stmt->execute();
+    $id = $conn->insert_id;
+    $stmt->close();
+    return $id;
+}
+
+/** Insert or update the translation of $pageId in $langName. */
+function saveTranslation(mysqli $conn, int $pageId, string $langName, ?string $title, ?string $content): void {
+    $langId = getOrCreateLang($conn, $langName);
+
+    $stmt = $conn->prepare("SELECT ID, title, content FROM pagelang WHERE FORpage = ? AND FORlang = ?");
+    $stmt->bind_param("ii", $pageId, $langId);
+    $stmt->execute();
+    $existing = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if ($existing) {
+        $newTitle = ($title !== null && $title !== '') ? $title : $existing['title'];
+        if ($content !== null) {
+            $json = json_encode(['text' => $content], JSON_UNESCAPED_UNICODE);
+        } else {
+            $json = $existing['content'];
+        }
+        $slug = slugify($newTitle);
+        $stmt = $conn->prepare("UPDATE pagelang SET title = ?, slug = ?, content = ? WHERE ID = ?");
+        $stmt->bind_param("sssi", $newTitle, $slug, $json, $existing['ID']);
+    } else {
+        if ($title === null || $title === '') {
+            throw new Exception("Title is required for a new translation ($langName).");
+        }
+        $slug = slugify($title);
+        $json = json_encode(['text' => $content ?? ''], JSON_UNESCAPED_UNICODE);
+        $stmt = $conn->prepare("INSERT INTO pagelang (FORlang, FORpage, title, slug, content) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("iisss", $langId, $pageId, $title, $slug, $json);
+    }
+    $stmt->execute();
+    $stmt->close();
+}
+
+/** Returns pages, each with a `translations` array. */
+function fetchPages(mysqli $conn, array $conditions, string $types, array $params): array {
+    $where = $conditions ? "WHERE " . implode(" AND ", $conditions) : "";
+    $sql = "
+        SELECT p.ID AS page_id, p.created_at,
+                pl.title, pl.slug, pl.content, l.lang,
+                c.category,
+                m.file_path, m.file_name, m.file_type, m.alt_text
+        FROM page p
+        LEFT JOIN pagelang pl ON p.ID = pl.FORpage
+        LEFT JOIN lang l ON pl.FORlang = l.ID
+        LEFT JOIN pagecategory pc ON p.ID = pc.FORpage
+        LEFT JOIN category c ON pc.FORcategory = c.ID
+        LEFT JOIN pagemedia pm ON p.ID = pm.FORpage
+        LEFT JOIN media m ON pm.FORmedia = m.ID
+        $where
+        ORDER BY p.ID DESC, l.ID ASC
+    ";
+
+    $stmt = $conn->prepare($sql);
+    if ($params) $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $pages = [];
+    foreach ($rows as $r) {
+        $id = $r['page_id'];
+        if (!isset($pages[$id])) {
+            $pages[$id] = [
+                'page_id'      => $id,
+                'created_at'   => $r['created_at'],
+                'category'     => $r['category'],
+                'media'        => $r['file_path'] ? [
+                    'file_path' => $r['file_path'], 'file_name' => $r['file_name'],
+                    'file_type' => $r['file_type'], 'alt_text'  => $r['alt_text'],
+                ] : null,
+                'translations' => [],
+            ];
+        }
+        if ($r['lang'] !== null && !isset($pages[$id]['translations'][$r['lang']])) {
+            $decoded = json_decode($r['content'] ?? '', true);
+            $pages[$id]['translations'][$r['lang']] = [
+                'lang'    => $r['lang'],
+                'title'   => $r['title'],
+                'slug'    => $r['slug'],
+                'content' => (json_last_error() === JSON_ERROR_NONE) ? $decoded : $r['content'],
+            ];
+        }
+    }
+    foreach ($pages as &$p) $p['translations'] = array_values($p['translations']);
+    return array_values($pages);
+}
 
 // ==========================================
-// 1. GET REQUEST: Fetch All Sites OR Single Site
+// GET
 // ==========================================
 if ($method === 'GET') {
     try {
         $pageId   = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT) ?: null;
-        $title    = !empty($_GET['title']) ? $_GET['title'] : null;
-        $slug     = !empty($_GET['slug']) ? $_GET['slug'] : null;
+        $title    = !empty($_GET['title'])    ? $_GET['title']    : null;
+        $slug     = !empty($_GET['slug'])     ? $_GET['slug']     : null;
         $category = !empty($_GET['category']) ? $_GET['category'] : null;
-        $lang     = !empty($_GET['lang']) ? $_GET['lang'] : null; // Fixed typo (was $_GET['category'])
+        $lang     = !empty($_GET['lang'])     ? $_GET['lang']     : null;
 
-        // Look up 1 single site (by ID, Slug, or Title)
-        if ($pageId !== null || $title !== null || $slug !== null) {
-            $whereClause = "";
-            $param = "";
-            $type = "";
+        $codes = ['sv' => 'Svenska', 'en' => 'Engelska'];
+        if ($lang !== null && isset($codes[strtolower($lang)])) $lang = $codes[strtolower($lang)];
 
-            if ($pageId !== null) {
-                $whereClause = "p.ID = ?";
-                $param = $pageId;
-                $type = "i";
-            } elseif ($slug !== null) {
-                $whereClause = "pl.slug = ?";
-                $param = $slug;
-                $type = "s";
-            } else {
-                $whereClause = "pl.title = ?";
-                $param = $title;
-                $type = "s";
-            }
+        $conditions = []; $params = []; $types = "";
 
-            $sql = "
-                SELECT 
-                    p.ID as page_id,
-                    p.created_at,
-                    pl.title,
-                    pl.slug,
-                    pl.content,
-                    l.lang,
-                    c.category,
-                    m.file_path,
-                    m.file_name,
-                    m.file_type,
-                    m.alt_text
-                FROM page p
-                LEFT JOIN pagelang pl ON p.ID = pl.FORpage
-                LEFT JOIN lang l ON pl.FORlang = l.ID
-                LEFT JOIN pagecategory pc ON p.ID = pc.FORpage
-                LEFT JOIN category c ON pc.FORcategory = c.ID
-                LEFT JOIN pagemedia pm ON p.ID = pm.FORpage
-                LEFT JOIN media m ON pm.FORmedia = m.ID
-                WHERE {$whereClause}
-                LIMIT 1
-            ";
+        if ($pageId !== null) {
+            $conditions[] = "p.ID = ?"; $params[] = $pageId; $types .= "i";
+        } elseif ($slug !== null) {
+            $conditions[] = "p.ID IN (SELECT FORpage FROM pagelang WHERE slug = ?)"; $params[] = $slug; $types .= "s";
+        } elseif ($title !== null) {
+            $conditions[] = "p.ID IN (SELECT FORpage FROM pagelang WHERE title = ?)"; $params[] = $title; $types .= "s";
+        }
 
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param($type, $param);
-            $stmt->execute();
-            $site = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
+        if ($lang !== null) {
+            if (is_numeric($lang)) { $conditions[] = "l.ID = ?";   $params[] = (int)$lang; $types .= "i"; }
+            else                   { $conditions[] = "l.lang = ?"; $params[] = $lang;      $types .= "s"; }
+        }
+        if ($category !== null) {
+            if (is_numeric($category)) { $conditions[] = "c.ID = ?";       $params[] = (int)$category; $types .= "i"; }
+            else                       { $conditions[] = "c.category = ?"; $params[] = $category;      $types .= "s"; }
+        }
 
-            if ($site) {
-                if (!empty($site['content'])) {
-                    $decoded = json_decode($site['content'], true);
-                    $site['content'] = (json_last_error() === JSON_ERROR_NONE) ? $decoded : $site['content'];
-                }
+        $pages = fetchPages($conn, $conditions, $types, $params);
 
-                echo json_encode(['success' => true, 'data' => $site], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($pageId !== null || $slug !== null || $title !== null) {
+            if ($pages) {
+                echo json_encode(['success' => true, 'data' => $pages[0]], JSON_FLAGS);
             } else {
                 http_response_code(404);
                 echo json_encode(['success' => false, 'message' => 'No matching record found.']);
             }
-            exit;
-        }
-
-        // --- FETCH LIST OF SITES (With Option 1: Dynamic Filtering for lang and category) ---
-        $conditions = [];
-        $params = [];
-        $types = "";
-
-        // Language Filter (handles numeric ID like lang=1 or string code like lang=en)
-        if ($lang !== null) {
-            if (is_numeric($lang)) {
-                $conditions[] = "l.ID = ?";
-                $params[] = (int)$lang;
-                $types .= "i";
-            } else {
-                $conditions[] = "l.lang = ?";
-                $params[] = $lang;
-                $types .= "s";
-            }
-        }
-
-        // Category Filter (handles numeric ID like category=2 or string like category=news)
-        if ($category !== null) {
-            if (is_numeric($category)) {
-                $conditions[] = "c.ID = ?";
-                $params[] = (int)$category;
-                $types .= "i";
-            } else {
-                $conditions[] = "c.category = ?";
-                $params[] = $category;
-                $types .= "s";
-            }
-        }
-
-        $whereSQL = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
-
-        $sql = "
-            SELECT 
-                p.ID as page_id,
-                p.created_at,
-                pl.title,
-                pl.slug,
-                pl.content,
-                l.lang,
-                c.category,
-                m.file_path,
-                m.file_name,
-                m.file_type,
-                m.alt_text
-            FROM page p
-            LEFT JOIN pagelang pl ON p.ID = pl.FORpage
-            LEFT JOIN lang l ON pl.FORlang = l.ID
-            LEFT JOIN pagecategory pc ON p.ID = pc.FORpage
-            LEFT JOIN category c ON pc.FORcategory = c.ID
-            LEFT JOIN pagemedia pm ON p.ID = pm.FORpage
-            LEFT JOIN media m ON pm.FORmedia = m.ID
-            {$whereSQL}
-            ORDER BY p.ID DESC
-        ";
-
-        if (!empty($params)) {
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param($types, ...$params);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $sites = $result->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
         } else {
-            $result = $conn->query($sql);
-            $sites = $result->fetch_all(MYSQLI_ASSOC);
+            echo json_encode(['success' => true, 'data' => $pages], JSON_FLAGS);
         }
-
-        // Decode content for each page entry
-        foreach ($sites as &$site) {
-            if (!empty($site['content'])) {
-                $decoded = json_decode($site['content'], true);
-                $site['content'] = (json_last_error() === JSON_ERROR_NONE) ? $decoded : $site['content'];
-            }
-        }
-
-        echo json_encode(['success' => true, 'data' => $sites], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        exit;
-
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Error: ' . $e->getMessage()]);
-        exit;
     }
+    exit;
 }
 
 // ==========================================
-// 2. POST REQUEST: Create, Update, or Delete
+// POST: CREATE / UPDATE / DELETE
 // ==========================================
 if ($method === 'POST') {
-    $data = json_decode(file_get_contents('php://input'), true);
+    $data   = json_decode(file_get_contents('php://input'), true) ?? [];
     $action = $data['action'] ?? 'CREATE';
 
-    // ------------------------------------------
-    // ACTION: DELETE
-    // ------------------------------------------
-    if ($action === 'DELETE') {
-        if (empty($data['page_id'])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => 'Page ID is required.']);
-            exit;
-        }
-
-        $pageId = (int)$data['page_id'];
-
-        try {
-            // Get files to unlink
-            $stmtFetch = $conn->prepare("SELECT m.ID, m.file_path FROM media m JOIN pagemedia pm ON m.ID = pm.FORmedia WHERE pm.FORpage = ?");
-            $stmtFetch->bind_param("i", $pageId);
-            $stmtFetch->execute();
-            $mediaToDelete = $stmtFetch->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmtFetch->close();
-
-            // Delete Page
-            $stmtPage = $conn->prepare("DELETE FROM page WHERE ID = ?");
-            $stmtPage->bind_param("i", $pageId);
-            $stmtPage->execute();
-            $stmtPage->close();
-
-            // Delete Media
-            if (!empty($mediaToDelete)) {
-                $stmtMedia = $conn->prepare("DELETE FROM media WHERE ID = ?");
-                foreach ($mediaToDelete as $media) {
-                    $stmtMedia->bind_param("i", $media['ID']);
-                    $stmtMedia->execute();
-                    if (!empty($media['file_path']) && file_exists($media['file_path'])) {
-                        unlink($media['file_path']);
-                    }
-                }
-                $stmtMedia->close();
-            }
-
-            echo json_encode(['success' => true, 'message' => 'Site and media deleted successfully!']);
-            exit;
-        } catch (Exception $e) {
-            http_response_code(500);
-            echo json_encode(['success' => false, 'message' => 'Delete error: ' . $e->getMessage()]);
-            exit;
-        }
-    }
-
-    // ------------------------------------------
-    // ACTION: UPDATE
-    // ------------------------------------------
-    if ($action === 'UPDATE') {
-        if (empty($data['page_id'])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => 'Page ID is required.']);
-            exit;
-        }
-
-        $pageId = (int)$data['page_id'];
-
-        try {
-            if (!empty($data['title'])) {
-                $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['title']), '-'));
-                $stmt = $conn->prepare("UPDATE pagelang SET title = ?, slug = ? WHERE FORpage = ?");
-                $stmt->bind_param("ssi", $data['title'], $slug, $pageId);
-                $stmt->execute();
-                $stmt->close();
-            }
-
-            if (isset($data['content'])) {
-                $jsonContent = json_encode(['text' => $data['content']]);
-                $stmt = $conn->prepare("UPDATE pagelang SET content = ? WHERE FORpage = ?");
-                $stmt->bind_param("si", $jsonContent, $pageId);
-                $stmt->execute();
-                $stmt->close();
-            }
-
-            echo json_encode(['success' => true, 'message' => 'Site updated successfully!']);
-            exit;
-        } catch (Exception $e) {
-            http_response_code(500);
-            echo json_encode(['success' => false, 'message' => 'Update error: ' . $e->getMessage()]);
-            exit;
-        }
-    }
-
-    // ------------------------------------------
-    // ACTION: CREATE
-    // ------------------------------------------
-    if (empty($data['title']) || empty($data['category']) || empty($data['lang'])) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Title, Category, and Language are required.']);
-        exit;
-    }
-
     try {
-        $conn->begin_transaction();
+        // ---------- CREATE ----------
+        if ($action === 'CREATE') {
+            if (empty($data['category']) || empty($data['translations']) || !is_array($data['translations'])) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Category and at least one translation are required.']);
+                exit;
+            }
 
-        // 1. Insert Page
-        $stmt = $conn->prepare("INSERT INTO page (created_at) VALUES (NOW())");
-        $stmt->execute();
-        $pageId = $conn->insert_id;
-        $stmt->close();
+            $conn->begin_transaction();
 
-        // 2. Language
-        $stmt = $conn->prepare("SELECT ID FROM lang WHERE lang = ?");
-        $stmt->bind_param("s", $data['lang']);
-        $stmt->execute();
-        $res = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        if ($res) {
-            $langId = $res['ID'];
-        } else {
-            $stmt = $conn->prepare("INSERT INTO lang (lang) VALUES (?)");
-            $stmt->bind_param("s", $data['lang']);
+            $stmt = $conn->prepare("INSERT INTO page (created_at) VALUES (NOW())");
             $stmt->execute();
-            $langId = $conn->insert_id;
+            $pageId = $conn->insert_id;
             $stmt->close();
+
+            $saved = 0;
+            foreach ($data['translations'] as $t) {
+                $langName = trim($t['lang'] ?? '');
+                $title    = trim($t['title'] ?? '');
+                if ($langName === '' || $title === '') continue;
+                saveTranslation($conn, $pageId, $langName, $title, $t['content'] ?? '');
+                $saved++;
+            }
+            if ($saved === 0) throw new Exception("At least one translation needs a language and title.");
+
+            $catId = getOrCreateCategory($conn, $data['category']);
+            $stmt = $conn->prepare("INSERT INTO pagecategory (FORcategory, FORpage) VALUES (?, ?)");
+            $stmt->bind_param("ii", $catId, $pageId);
+            $stmt->execute();
+            $stmt->close();
+
+            if (!empty($data['imgName'])) {
+                $imgName   = $data['imgName'];
+                $imgAlt    = $data['imgAlt'] ?? '';
+                $filePath  = 'uploads/' . $imgName;
+                $ext       = strtolower(pathinfo($imgName, PATHINFO_EXTENSION));
+                $mimeTypes = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp'];
+                $fileType  = $mimeTypes[$ext] ?? 'image/jpeg';
+
+                $stmt = $conn->prepare("INSERT INTO media (file_path, file_name, file_type, alt_text, created_at) VALUES (?, ?, ?, ?, NOW())");
+                $stmt->bind_param("ssss", $filePath, $imgName, $fileType, $imgAlt);
+                $stmt->execute();
+                $mediaId = $conn->insert_id;
+                $stmt->close();
+
+                $stmt = $conn->prepare("INSERT INTO pagemedia (FORmedia, FORpage) VALUES (?, ?)");
+                $stmt->bind_param("ii", $mediaId, $pageId);
+                $stmt->execute();
+                $stmt->close();
+            }
+
+            $conn->commit();
+            echo json_encode(['success' => true, 'message' => 'Page created with translations!', 'page_id' => $pageId]);
+            exit;
         }
 
-        // 3. Pagelang
-        $slug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['title']), '-'));
-        $jsonContent = json_encode(['text' => $data['content'] ?? '']);
-        $stmt = $conn->prepare("INSERT INTO pagelang (FORlang, FORpage, title, slug, content) VALUES (?, ?, ?, ?, ?)");
-        $stmt->bind_param("iisss", $langId, $pageId, $data['title'], $slug, $jsonContent);
-        $stmt->execute();
-        $stmt->close();
+        // ---------- UPDATE (edit one language; creates it if missing) ----------
+        if ($action === 'UPDATE') {
+            if (empty($data['page_id']) || empty($data['lang'])) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'page_id and lang are required.']);
+                exit;
+            }
+            $pageId = (int)$data['page_id'];
 
-        // 4. Category
-        $stmt = $conn->prepare("SELECT ID FROM category WHERE category = ?");
-        $stmt->bind_param("s", $data['category']);
-        $stmt->execute();
-        $res = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-
-        if ($res) {
-            $catId = $res['ID'];
-        } else {
-            $catSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $data['category']), '-'));
-            $stmt = $conn->prepare("INSERT INTO category (category, slug) VALUES (?, ?)");
-            $stmt->bind_param("ss", $data['category'], $catSlug);
+            $stmt = $conn->prepare("SELECT ID FROM page WHERE ID = ?");
+            $stmt->bind_param("i", $pageId);
             $stmt->execute();
-            $catId = $conn->insert_id;
+            $exists = $stmt->get_result()->fetch_assoc();
             $stmt->close();
+            if (!$exists) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Page not found.']);
+                exit;
+            }
+
+            saveTranslation(
+                $conn, $pageId, trim($data['lang']),
+                isset($data['title'])   ? trim($data['title']) : null,
+                isset($data['content']) ? (string)$data['content'] : null
+            );
+            echo json_encode(['success' => true, 'message' => 'Translation saved!']);
+            exit;
         }
 
-        $stmt = $conn->prepare("INSERT INTO pagecategory (FORcategory, FORpage) VALUES (?, ?)");
-        $stmt->bind_param("ii", $catId, $pageId);
-        $stmt->execute();
-        $stmt->close();
-
-        // 5. Media (Optional)
-        if (!empty($data['imgName'])) {
-            $filePath  = 'uploads/' . $data['imgName'];
-            $ext       = strtolower(pathinfo($data['imgName'], PATHINFO_EXTENSION));
-            $mimeTypes = ['png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'gif' => 'image/gif', 'webp' => 'image/webp'];
-            $fileType  = $mimeTypes[$ext] ?? 'image/jpeg';
-
-            $stmt = $conn->prepare("INSERT INTO media (file_path, file_name, file_type, alt_text, created_at) VALUES (?, ?, ?, ?, NOW())");
-            $stmt->bind_param("ssss", $filePath, $data['imgName'], $fileType, $data['imgAlt']);
+        // ---------- DELETE (pagelang, pagecategory, pagemedia cascade) ----------
+        if ($action === 'DELETE') {
+            if (empty($data['page_id'])) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Page ID is required.']);
+                exit;
+            }
+            $pageId = (int)$data['page_id'];
+            $stmt = $conn->prepare("DELETE FROM page WHERE ID = ?");
+            $stmt->bind_param("i", $pageId);
             $stmt->execute();
-            $mediaId = $conn->insert_id;
+            $affected = $stmt->affected_rows;
             $stmt->close();
 
-            $stmt = $conn->prepare("INSERT INTO pagemedia (FORmedia, FORpage) VALUES (?, ?)");
-            $stmt->bind_param("ii", $mediaId, $pageId);
-            $stmt->execute();
-            $stmt->close();
+            if ($affected === 0) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'message' => 'Page not found.']);
+            } else {
+                echo json_encode(['success' => true, 'message' => 'Site deleted successfully!']);
+            }
+            exit;
         }
 
-        $conn->commit();
-        echo json_encode(['success' => true, 'message' => 'Site created successfully!', 'page_id' => $pageId]);
-        exit;
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Unknown action.']);
 
     } catch (Exception $e) {
-        $conn->rollback();
+        try { $conn->rollback(); } catch (Exception $ignore) {}
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
-        exit;
     }
+    exit;
 }

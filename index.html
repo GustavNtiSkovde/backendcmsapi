@@ -12,8 +12,18 @@
         <div>
             <h3>Sidor skapade</h3>
             <form>
-                <input id="TitleForSite" type="text" placeholder="Title for site">
-                <input id="ContentForSite" type="text" placeholder="Content for site">
+                <fieldset>
+                    <legend>Svenska</legend>
+                    <input id="SvTitle" type="text" placeholder="Titel">
+                    <input id="SvContent" type="text" placeholder="Innehåll">
+                </fieldset>
+
+                <fieldset>
+                    <legend>English</legend>
+                    <input id="EnTitle" type="text" placeholder="Title">
+                    <input id="EnContent" type="text" placeholder="Content">
+                </fieldset>
+                
                 <input id="NameOfImg" type="text" placeholder="Name of Img (e.g. pic.png)">
                 <input id="AltTxtForImg" type="text" placeholder="Alt text for img">
 
@@ -22,17 +32,9 @@
                     <option value="News">News</option>
                     <option value="Blog">Blog</option>
                     <option value="Products">Products</option>
-                    <option value="Bajs">Bajs</option>
-                </select>
-
-                <select id="LangForSite" required>
-                    <option value="">Select Language</option>
-                    <option value="Svenska">Svenska (sv)</option>
-                    <option value="Engelska">English (en)</option>
                 </select>
             </form>
-            
-            <button id="AddSideBtn">Add side</button> 
+            <button id="AddSideBtn">Add side</button>
         </div>
         <div id="ViewSitesBox" class="scroll-view"></div>
     </div>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CMS API documentation</title>
+
+</head>
+<body>
+<nav>
+  <h1>CMS API</h1>
+  <p>Pages with Swedish and English translations</p>
+  <a href="#overview">Overview</a>
+  <a href="#model">Data model</a>
+  <a href="#get">Get pages</a>
+  <a href="#create">Create a page</a>
+  <a href="#update">Update a translation</a>
+  <a href="#delete">Delete a page</a>
+  <a href="#errors">Errors</a>
+  <a href="#notes">Good to know</a>
+</nav>
+
+<main>
+<h2 id="overview">Overview</h2>
+<p>One endpoint handles everything. Reading uses <code>GET</code>. Creating, updating and deleting use <code>POST</code> with a JSON body and an <code>action</code> field.</p>
+<pre><code>https://cmsapi.ntigskovde.se/gustav/api.php</code></pre>
+<p>Every response is JSON. A request worked if <code>success</code> is <code>true</code>. Send <code>Content-Type: application/json</code> on every POST.</p>
+
+<h2 id="model">Data model</h2>
+<p>A page is one record with a category, optional image, and any number of translations (one per language). Languages in the database are <code>Svenska</code> and <code>Engelska</code>.</p>
+<pre><code>{
+  "page_id": 12,
+  "created_at": "2026-10-09 14:30:00",
+  "category": "News",
+  "media": {
+    "file_path": "uploads/pic.png",
+    "file_name": "pic.png",
+    "file_type": "image/png",
+    "alt_text": "A picture"
+  },
+  "translations": [
+    { "lang": "Svenska",  "title": "Hej världen", "slug": "hej-varlden", "content": { "text": "Svensk text" } },
+    { "lang": "Engelska", "title": "Hello world", "slug": "hello-world", "content": { "text": "English text" } }
+  ]
+}</code></pre>
+<p><code>media</code> is <code>null</code> when the page has no image. <code>content</code> is an object with a <code>text</code> key.</p>
+
+<h2 id="get"><span class="verb get">GET</span>Get pages</h2>
+<p class="endpoint">/api.php</p>
+<p>Returns a list of pages, or one page when you pass <code>id</code>, <code>slug</code> or <code>title</code>. All parameters are optional and can be combined.</p>
+<div class="scroll"><table>
+<tr><th>Parameter</th><th>Description</th></tr>
+<tr><td><code>id</code></td><td>Page ID. Returns a single page.</td></tr>
+<tr><td><code>slug</code></td><td>Returns the page that has a translation with this slug (in any language).</td></tr>
+<tr><td><code>title</code></td><td>Returns the page that has a translation with exactly this title.</td></tr>
+<tr><td><code>lang</code></td><td><code>sv</code>, <code>en</code>, <code>Svenska</code>, <code>Engelska</code> or the numeric language ID. Only that translation is included, and pages without it are left out.</td></tr>
+<tr><td><code>category</code></td><td>Category name (<code>News</code>) or numeric ID.</td></tr>
+</table></div>
+<p>If several single-page parameters are sent, the priority is <code>id</code>, then <code>slug</code>, then <code>title</code>.</p>
+
+<h3>Examples</h3>
+<pre><code>GET /api.php                          all pages, all translations
+GET /api.php?lang=sv                  all pages, Swedish only
+GET /api.php?category=News&amp;lang=en    English news pages
+GET /api.php?id=12                    one page
+GET /api.php?slug=hello-world         one page found by slug</code></pre>
+
+<h3>Response: list</h3>
+<pre><code>{ "success": true, "data": [ { …page… }, { …page… } ] }</code></pre>
+<h3>Response: single page</h3>
+<pre><code>{ "success": true, "data": { …page… } }</code></pre>
+<p>A single-page lookup with no match returns status <code>404</code>.</p>
+
+<h2 id="create"><span class="verb post">POST</span>Create a page</h2>
+<p class="endpoint">/api.php &nbsp; <code>"action": "CREATE"</code></p>
+<p>Creates one page with one or more translations. <code>CREATE</code> is the default if <code>action</code> is left out.</p>
+<div class="scroll"><table>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+<tr><td><code>category</code></td><td>string, required</td><td>Category name. Created if it doesn't exist yet.</td></tr>
+<tr><td><code>translations</code></td><td>array, required</td><td>Each item has <code>lang</code>, <code>title</code> and <code>content</code>. Items missing <code>lang</code> or <code>title</code> are skipped. At least one valid item is needed.</td></tr>
+<tr><td><code>imgName</code></td><td>string, optional</td><td>File name such as <code>pic.png</code>. Stored as <code>uploads/pic.png</code>.</td></tr>
+<tr><td><code>imgAlt</code></td><td>string, optional</td><td>Alt text for the image.</td></tr>
+</table></div>
+<h3>Request</h3>
+<pre><code>{
+  "action": "CREATE",
+  "category": "News",
+  "imgName": "pic.png",
+  "imgAlt": "A picture",
+  "translations": [
+    { "lang": "Svenska",  "title": "Hej världen", "content": "Svensk text" },
+    { "lang": "Engelska", "title": "Hello world", "content": "English text" }
+  ]
+}</code></pre>
+<h3>Response</h3>
+<pre><code>{ "success": true, "message": "Page created with translations!", "page_id": 12 }</code></pre>
+<p>The page and all its parts are saved together. If anything fails, nothing is saved.</p>
+
+<h2 id="update"><span class="verb post">POST</span>Update a translation</h2>
+<p class="endpoint">/api.php &nbsp; <code>"action": "UPDATE"</code></p>
+<p>Edits one language of a page. If the page has no translation in that language yet, one is added, which is how you add a missing Swedish or English version later. Other languages are not touched.</p>
+<div class="scroll"><table>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+<tr><td><code>page_id</code></td><td>integer, required</td><td>The page to change.</td></tr>
+<tr><td><code>lang</code></td><td>string, required</td><td><code>Svenska</code> or <code>Engelska</code>.</td></tr>
+<tr><td><code>title</code></td><td>string, optional</td><td>New title. The slug is regenerated from it. Required when adding a new translation.</td></tr>
+<tr><td><code>content</code></td><td>string, optional</td><td>New content. Left unchanged if omitted.</td></tr>
+</table></div>
+<h3>Request</h3>
+<pre><code>{ "action": "UPDATE", "page_id": 12, "lang": "Engelska", "title": "Hello again", "content": "New text" }</code></pre>
+<h3>Response</h3>
+<pre><code>{ "success": true, "message": "Translation saved!" }</code></pre>
+
+<h2 id="delete"><span class="verb del">POST</span>Delete a page</h2>
+<p class="endpoint">/api.php &nbsp; <code>"action": "DELETE"</code></p>
+<p>Deletes the page with all its translations, its category link and its image link. The image record in the <code>media</code> table is kept.</p>
+<pre><code>{ "action": "DELETE", "page_id": 12 }</code></pre>
+<h3>Response</h3>
+<pre><code>{ "success": true, "message": "Site deleted successfully!" }</code></pre>
+
+<h2 id="errors">Errors</h2>
+<p>Errors always have <code>success: false</code> and a <code>message</code>.</p>
+<pre><code>{ "success": false, "message": "Page not found." }</code></pre>
+<div class="scroll"><table>
+<tr><th>Status</th><th>When</th></tr>
+<tr><td><code>400</code></td><td>A required field is missing, or <code>action</code> is not <code>CREATE</code>, <code>UPDATE</code> or <code>DELETE</code>.</td></tr>
+<tr><td><code>404</code></td><td>The page doesn't exist, or a single-page lookup found nothing.</td></tr>
+<tr><td><code>500</code></td><td>Database error. The message says what failed.</td></tr>
+</table></div>
+
+<h2 id="notes">Good to know</h2>
+<div class="note warn"><strong>There is no authentication.</strong> Anyone who knows the URL can create, change and delete pages. Add a login or an API key before using this on a public site.</div>
+<h3>Slugs</h3>
+<p>Slugs are generated from the title: lowercase, <code>å ä ö</code> become <code>a a o</code>, and anything other than letters, digits and hyphens becomes a hyphen. Slugs are not unique, so two pages with the same title share a slug.</p>
+<h3>Images</h3>
+<p>The API only stores the file name and path. It does not upload the file, so put the image in the <code>uploads/</code> folder yourself. Each path can be used once, so a second page can't reuse the same image name.</p>
+<h3>Fetch example</h3>
+<pre><code>const res = await fetch("api.php", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ action: "DELETE", page_id: 12 })
+});
+const result = await res.json();
+if (!result.success) console.error(result.message);</code></pre>
+<h3>curl example</h3>
+<pre><code>curl -X POST https://cmsapi.ntigskovde.se/gustav/api.php \
+  -H "Content-Type: application/json" \
+  -d '{"action":"UPDATE","page_id":12,"lang":"Svenska","title":"Ny titel"}'</code></pre>
+</main>
+</body>
+</html>
