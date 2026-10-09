@@ -4,7 +4,9 @@ require_once 'db.php';
 
 const JSON_FLAGS = JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
 
-// ---------- Helpers ----------
+//=================
+// Helper Funcs
+//=================
 
 /** Send a JSON response and stop. */
 function respond(int $code, array $body): never {
@@ -14,11 +16,11 @@ function respond(int $code, array $body): never {
 }
 
 function slugify(string $s): string {
-    $s = strtr($s, ['å'=>'a','ä'=>'a','ö'=>'o','Å'=>'A','Ä'=>'A','Ö'=>'O']);
-    return strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $s), '-')) ?: 'page';
+    $s = strtr($s, ['å'=>'a','ä'=>'a','ö'=>'o','Å'=>'A','Ä'=>'A','Ö'=>'O']); //Convert to slugable
+    return strtolower(trim(preg_replace('/[^A-Za-z0-9-]+/', '-', $s), '-')) ?: 'page'; //Replaces special characters
 }
 
-/** Run a SELECT with bound parameters and return the first row, or null. */
+// Run a SELECT with bound parameters and return the first row, or null.
 function fetchRow(mysqli $conn, string $sql, string $types, array $params): ?array {
     $stmt = $conn->prepare($sql);
     $stmt->bind_param($types, ...$params);
@@ -27,7 +29,7 @@ function fetchRow(mysqli $conn, string $sql, string $types, array $params): ?arr
     $stmt->close();
     return $row ?: null;
 }
-
+//Language
 function getOrCreateLang(mysqli $conn, string $name): int {
     $row = fetchRow($conn, "SELECT ID FROM lang WHERE lang = ?", "s", [$name]);
     if ($row) return (int)$row['ID'];
@@ -40,7 +42,8 @@ function getOrCreateLang(mysqli $conn, string $name): int {
     return $id;
 }
 
-function getOrCreateCategory(mysqli $conn, string $name): int {
+//Category
+function getOrCreateCategory(mysqli $conn, string $name): int { 
     $row = fetchRow($conn, "SELECT ID FROM category WHERE category = ?", "s", [$name]);
     if ($row) return (int)$row['ID'];
 
@@ -53,7 +56,7 @@ function getOrCreateCategory(mysqli $conn, string $name): int {
     return $id;
 }
 
-/** Insert or update the translation of $pageId in $langName. */
+// Insert or update the translation of $pageId in $langName.
 function saveTranslation(mysqli $conn, int $pageId, string $langName, ?string $title, ?string $content): void {
     $langId   = getOrCreateLang($conn, $langName);
     $existing = fetchRow($conn, "SELECT ID, title, content FROM pagelang WHERE FORpage = ? AND FORlang = ?", "ii", [$pageId, $langId]);
@@ -79,14 +82,14 @@ function saveTranslation(mysqli $conn, int $pageId, string $langName, ?string $t
     $stmt->close();
 }
 
-/** Returns pages, each with a `translations` array. */
+// Returns pages, each with a `translations` array.
 function fetchPages(mysqli $conn, array $conditions, string $types, array $params): array {
     $where = $conditions ? "WHERE " . implode(" AND ", $conditions) : "";
     $sql = "
         SELECT p.ID AS page_id, p.created_at,
-               pl.title, pl.slug, pl.content, l.lang,
-               c.category,
-               m.file_path, m.file_name, m.file_type, m.alt_text
+                pl.title, pl.slug, pl.content, l.lang,
+                c.category,
+                m.file_path, m.file_name, m.file_type, m.alt_text
         FROM page p
         LEFT JOIN pagelang pl ON p.ID = pl.FORpage
         LEFT JOIN lang l ON pl.FORlang = l.ID
@@ -143,7 +146,7 @@ function fetchPages(mysqli $conn, array $conditions, string $types, array $param
 }
 
 // ==========================================
-// GET
+// GET 
 // ==========================================
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -211,7 +214,7 @@ if ($method === 'POST') {
     $action = $data['action'] ?? 'CREATE';
 
     try {
-        // ---------- CREATE ----------
+        // Create
         if ($action === 'CREATE') {
             if (empty($data['category']) || empty($data['translations']) || !is_array($data['translations'])) {
                 respond(400, ['success' => false, 'message' => 'Category and at least one translation are required.']);
@@ -268,7 +271,7 @@ if ($method === 'POST') {
             respond(200, ['success' => true, 'message' => 'Page created with translations!', 'page_id' => $pageId]);
         }
 
-        // ---------- UPDATE (edits one language; creates it if missing) ----------
+        // Edit
         if ($action === 'UPDATE') {
             if (empty($data['page_id']) || empty($data['lang'])) {
                 respond(400, ['success' => false, 'message' => 'page_id and lang are required.']);
@@ -287,7 +290,7 @@ if ($method === 'POST') {
             respond(200, ['success' => true, 'message' => 'Translation saved!']);
         }
 
-        // ---------- DELETE (pagelang, pagecategory and pagemedia cascade) ----------
+        // Delete with cascade
         if ($action === 'DELETE') {
             if (empty($data['page_id'])) {
                 respond(400, ['success' => false, 'message' => 'Page ID is required.']);
