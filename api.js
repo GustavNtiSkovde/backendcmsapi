@@ -24,7 +24,7 @@ async function post(payload) {
     return response.json();
 }
 
-// ---------- List ----------
+//List
 async function loadSites() {
     try {
         const response = await fetch("api.php");
@@ -50,9 +50,9 @@ async function loadSites() {
                 const t = site.translations.find(x => x.lang === lang);
                 return t
                     ? `<p><strong>${esc(lang)}:</strong> ${esc(t.title)}
-                         <button class="edit-btn" data-id="${site.page_id}" data-lang="${esc(lang)}">Edit</button></p>`
+                        <button class="edit-btn" data-id="${site.page_id}" data-lang="${esc(lang)}">Edit</button></p>`
                     : `<p><strong>${esc(lang)}:</strong> <em>missing</em>
-                         <button class="edit-btn" data-id="${site.page_id}" data-lang="${esc(lang)}">Add translation</button></p>`;
+                        <button class="edit-btn" data-id="${site.page_id}" data-lang="${esc(lang)}">Add translation</button></p>`;
             }).join("");
 
             const card = document.createElement("div");
@@ -70,7 +70,7 @@ async function loadSites() {
     }
 }
 
-// ---------- Edit / Remove (event delegation, so no re-attaching) ----------
+//Edit and remove btnfunc
 viewSiteBox.addEventListener("click", async e => {
     const btn = e.target.closest("button");
     if (!btn) return;
@@ -106,7 +106,7 @@ viewSiteBox.addEventListener("click", async e => {
     }
 });
 
-// ---------- Create ----------
+// Create
 $("AddSideBtn").addEventListener("click", async e => {
     e.preventDefault();
 
